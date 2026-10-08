@@ -9,8 +9,8 @@ namespace silo
 
 // Stereo width with a mono-safe low end.
 //
-// The signal is split by a Linkwitz-Riley crossover. Lows pass untouched; the
-// highs go through mid/side, where the side is scaled by `width`
+// The signal is split by a Linkwitz-Riley crossover. Lows are summed to mono;
+// the highs go through mid/side, where the side is scaled by `width`
 // (0 = mono, 1 = unchanged, 2 = twice as wide). A slow loudness follower trims
 // the highs so widening or narrowing doesn't change perceived level.
 //
@@ -28,7 +28,9 @@ public:
         highpass.prepare (spec);
         lowpass.setType (juce::dsp::LinkwitzRileyFilterType::lowpass);
         highpass.setType (juce::dsp::LinkwitzRileyFilterType::highpass);
-        setCrossover (crossoverHz);
+        crossover.reset (sampleRate, 0.05);
+        crossover.setCurrentAndTargetValue (crossoverHz);
+        applyCutoff (crossoverHz);
 
         width.reset (sampleRate, 0.05);
         width.setCurrentAndTargetValue (1.0f);
@@ -56,11 +58,12 @@ public:
         active.setTargetValue (std::abs (newWidth - 1.0f) > 1.0e-4f ? 1.0f : 0.0f);
     }
 
+    // Glides to the new frequency over ~50 ms; jumping the filter coefficients
+    // while audio runs through them would click.
     void setCrossover (float hz)
     {
         crossoverHz = hz;
-        lowpass.setCutoffFrequency (hz);
-        highpass.setCutoffFrequency (hz);
+        crossover.setTargetValue (hz);
     }
 
     // True when the module is fully idle and leaves the signal untouched.
@@ -99,8 +102,9 @@ public:
             makeup.setTargetValue (after > 1.0e-12f ? juce::jlimit (0.5f, 2.0f, std::sqrt (before / after)) : 1.0f);
             const float g = makeup.getNextValue();
 
-            const float wetL = bands.lowL + g * (mid + w * side);
-            const float wetR = bands.lowR + g * (mid - w * side);
+            const float low  = 0.5f * (bands.lowL + bands.lowR);
+            const float wetL = low + g * (mid + w * side);
+            const float wetR = low + g * (mid - w * side);
 
             const float a = active.getNextValue();
             left[i]  = dryL + a * (wetL - dryL);
@@ -111,14 +115,24 @@ public:
 private:
     struct Bands { float lowL, lowR, highL, highR; };
 
+    void applyCutoff (float hz)
+    {
+        lowpass.setCutoffFrequency (hz);
+        highpass.setCutoffFrequency (hz);
+    }
+
     Bands split (float l, float r)
     {
+        if (crossover.isSmoothing())
+            applyCutoff (crossover.getNextValue());
+
         return { lowpass.processSample (0, l),  lowpass.processSample (1, r),
                  highpass.processSample (0, l), highpass.processSample (1, r) };
     }
 
     juce::dsp::LinkwitzRileyFilter<float> lowpass, highpass;
     juce::SmoothedValue<float> width, active, makeup;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> crossover;
 
     float crossoverHz   = 120.0f;
     float followerCoeff = 0.0f;

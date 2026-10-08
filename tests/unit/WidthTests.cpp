@@ -71,3 +71,49 @@ TEST_CASE ("Widening keeps the lows mono and the level matched", "[unit][width]"
         CHECK (std::abs (loudnessDb (out.first, out.second, 48000) - loudnessDb (in.first, in.second, 48000)) < 1.0);
     }
 }
+
+TEST_CASE ("Phase-offset stereo bass comes out mono when width is active", "[unit][width]")
+{
+    // Bass 90 degrees out of phase between the sides (correlation 0 going in).
+    Signal l (96000), r (96000);
+    for (size_t i = 0; i < l.size(); ++i)
+    {
+        const double ph = 2.0 * 3.141592653589793 * 50.0 * (double) i / sr;
+        const float tone = 0.1f * (float) std::sin (2.0 * 3.141592653589793 * 1000.0 * (double) i / sr);
+        l[i] = 0.4f * (float) std::sin (ph) + tone;
+        r[i] = 0.4f * (float) std::cos (ph) + tone;
+    }
+    REQUIRE (std::abs (correlation (lowpass (l, 60.0, sr), lowpass (r, 60.0, sr), 48000)) < 0.1);
+
+    for (float w : { 0.0f, 0.5f, 1.4f })
+    {
+        INFO ("width " << w);
+        auto out = run (w, { l, r });
+        CHECK (correlation (lowpass (out.first, 60.0, sr), lowpass (out.second, 60.0, sr), 48000) > 0.98);
+    }
+}
+
+TEST_CASE ("Automating the crossover while width is active doesn't click", "[unit][width]")
+{
+    Signal l (96000), r (96000);
+    for (size_t i = 0; i < l.size(); ++i)
+    {
+        l[i] = 0.5f * (float) std::sin (2.0 * 3.141592653589793 * 110.0 * (double) i / sr);
+        r[i] = 0.5f * (float) std::sin (2.0 * 3.141592653589793 * 165.0 * (double) i / sr);
+    }
+    const double inStep = std::max (maxStep (l), maxStep (r));
+
+    silo::Width w;
+    w.prepare (sr, 256);
+    w.setWidth (1.5f);
+    for (size_t pos = 0, block = 0; pos < l.size(); pos += 256, ++block)
+    {
+        if (pos > 24000)   // after width has faded in, jump the crossover every block
+            w.setCrossover (block % 2 == 0 ? 60.0f : 250.0f);
+        const int n = (int) std::min<size_t> (256, l.size() - pos);
+        w.process (l.data() + pos, r.data() + pos, n);
+    }
+
+    const double outStep = std::max (maxStep (l, 24000), maxStep (r, 24000));
+    CHECK (toDb (outStep) - toDb (inStep) < 6.0);
+}

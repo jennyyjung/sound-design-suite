@@ -64,6 +64,8 @@ int main (int argc, char* argv[])
     const double sr = reader->sampleRate;
     const auto   numSamples = (int) reader->lengthInSamples;
     const int    blockSize  = option ("block").isNotEmpty() ? option ("block").getIntValue() : 512;
+    if (blockSize <= 0)
+        return fail ("--block must be a positive whole number");
 
     juce::AudioBuffer<float> audio (2, numSamples);
     reader->read (&audio, 0, numSamples, 0, true, true);   // mono files are copied to both sides
