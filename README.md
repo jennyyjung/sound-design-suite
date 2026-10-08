@@ -16,7 +16,10 @@ Build step 1 of the plan: infrastructure plus the first real module.
 | Macro parameters: Gate/Chop, Width/Auto-pan, Space | registered; **Width is wired (widening only)**, Gate/Chop and Space are not yet |
 | Advanced view: stereo width 0–200% (narrowing below 100%), mono-below crossover | ✓ |
 | Zone tables (`tuning/*.json`) with hot-reload in debug builds | ✓ (values are placeholders) |
-| Host clock (PPQ → steps, loop jumps, free-running when stopped) | ✓, not consumed yet |
+| Shared host clock (one timeline, per-module rates, host time signature, loop jumps, free-running when stopped) | ✓, not consumed yet |
+| Macro registry: one list drives parameters, tuning, UI and tests | ✓ |
+| Saved sessions record each macro's tuning version and dice seed | ✓ |
+| Tail and latency reported per module | ✓ (Width reports none; Space will report its decay) |
 | Unit + safety tests, offline render tool, CI | ✓ |
 | Auto-pan, Gate/Chop, Space DSP | next (build steps 2–4) |
 
@@ -41,11 +44,14 @@ Source/
   PluginProcessor.*   processing, state save/load
   PluginEditor.*      simple view (macro knobs + zone names) and advanced view ("Show parameters")
   Parameters.h        parameter IDs and layout
-  dsp/Clock.h         host tempo -> per-sample step position
+  dsp/Clock.h         host transport -> shared timeline; phase() and note values per module
+  dsp/Module.h        what each module reports: tail length, latency
   dsp/Width.h         crossover + mid/side width, gain-matched, bit-exact bypass at 100%
+  macros/MacroRegistry.h  the one list of macros
   macros/ZoneTable.h  loads tuning JSON, morphs between anchors
+  macros/TuningMigrations.h  maps old sessions' knob positions after a retune
   analysis/Metrics.h  loudness, correlation, click and null measurements
-tuning/               one JSON per macro: the taste lives here
+tuning/               one JSON per macro (the taste lives here) + tuning.lock
 tests/unit            clock, zone tables, width
 tests/safety          the "musically safe" contract, run through the real processor
 tools/render          offline renderer + metrics
@@ -58,7 +64,21 @@ Each `tuning/<macro>.json` is a list of anchors (`at` 0..1, a `name`, and parame
 
 In a **Debug** build the plugin re-reads these files about 15 times a second while its window is open, so you can edit a value, save, and hear it. Release builds compile the files in. After editing, run `ctest`: the safety tests re-check every macro position.
 
+**Versions.** Sessions save which tuning version each knob was set against. Once a table has shipped, any change to it must bump its `"version"`, or old sessions would silently play differently. `tuning/tuning.lock` enforces this: change a table without bumping and `ctest` fails, printing the lock line to paste after you bump. Editing only `"status"` or `"notes"` doesn't count. If the change moves zones around, add a case to `Source/macros/TuningMigrations.h` so old sessions land in the zone they were set to.
+
 The Width macro only ever widens. Narrowing is the advanced view's **Stereo width** parameter, which multiplies with the macro.
+
+## Adding a macro
+
+1. Add a line to `silo::macros` in `Source/macros/MacroRegistry.h` (ID and display name).
+2. Add `tuning/<id>.json` (first anchor at 0 = bypass, `"version": 1`) and its line in `tuning/tuning.lock` (run `ctest`, paste what it prints).
+3. Wire the DSP in `processBlock`, and add the module to `chain` in `PluginProcessor.h` so its tail and latency are counted.
+
+Parameters, the knob in the editor, hot-reload, saved-state versioning and the safety tests pick it up from the registry; the tests fail if the tuning file is missing or doesn't match a registered macro.
+
+## Timing
+
+`processBlock` turns the host transport into one `silo::Transport` per block and advances the clock once at the end; nothing else moves time. Each module picks its own rate: `transport.phaseAt (i, *silo::beatsForNote ("1/16", transport.beatsPerBar))`. Cycles are aligned to the host's bar start and bar length follows its time signature (6/8 = 3 quarter-note beats).
 
 ## Render tool
 
@@ -68,7 +88,7 @@ build/tools/render/soundsuite-render --in loop.wav --out sweep.wav --sweep width
 build/tools/render/soundsuite-render --in loop.wav --out narrow.wav --width_manual 40
 ```
 
-Any parameter ID works as `--<id> <value>` (macros 0..1, advanced parameters in their own units). Prints input and output metrics as JSON.
+Any parameter ID works as `--<id> <value>` (macros 0..1, advanced parameters in their own units). The output runs past the input by the plugin's reported tail, or by `--tail <seconds>`, so reverb and delay tails are rendered and measured. Prints input and output metrics as JSON.
 
 ## Tests
 

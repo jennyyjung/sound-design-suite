@@ -24,7 +24,7 @@ private:
         juce::Slider slider { juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::NoTextBox };
         juce::Label  title, zone;
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
-        const silo::ZoneTableHolder* zones = nullptr;
+        std::size_t macro = 0;   // index into silo::macros
     };
 
     struct AdvancedRow
@@ -36,7 +36,7 @@ private:
 
     SoundSuiteProcessor& processor;
 
-    std::array<MacroKnob, 3>                  macros;
+    std::vector<std::unique_ptr<MacroKnob>>   macros;   // one per silo::macros entry
     std::vector<std::unique_ptr<AdvancedRow>> advanced;
     juce::ToggleButton                        showParameters { "Show parameters" };
 

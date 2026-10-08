@@ -5,77 +5,112 @@
 
 using Catch::Matchers::WithinAbs;
 
-TEST_CASE ("Clock maps PPQ to 16th-note steps", "[unit][clock]")
+namespace
+{
+const silo::Transport& playingAt (silo::Clock& clock, double ppq, int num = 4, int den = 4, std::optional<double> barStart = std::nullopt)
+{
+    return clock.update (120.0, ppq, barStart, num, den, true);
+}
+}
+
+TEST_CASE ("Each module reads its own rate from one shared timeline", "[unit][clock]")
+{
+    silo::Clock clock;
+    clock.prepare (48000.0);
+    const auto& t = playingAt (clock, 3.875);   // halfway through the 16th #15 of bar 1
+
+    const double sixteenth = *silo::beatsForNote ("1/16", t.beatsPerBar);
+    const double bar       = *silo::beatsForNote ("1 bar", t.beatsPerBar);
+    const double quarter   = *silo::beatsForNote ("1/4", t.beatsPerBar);
+
+    CHECK (t.cycleIndex (t.ppq, sixteenth) == 15);
+    CHECK_THAT (t.phase (t.ppq, sixteenth), WithinAbs (0.5,     1e-9));
+    CHECK_THAT (t.phase (t.ppq, quarter),   WithinAbs (0.875,   1e-9));
+    CHECK_THAT (t.phase (t.ppq, bar),       WithinAbs (0.96875, 1e-9));
+}
+
+TEST_CASE ("Reading the timeline doesn't move it; only advance() does", "[unit][clock]")
+{
+    silo::Clock clock;
+    clock.prepare (48000.0);
+    clock.update (120.0, std::nullopt, std::nullopt, 4, 4, false);
+    const double start = clock.getTransport().ppq;
+
+    // Several modules reading the same block
+    for (int module = 0; module < 3; ++module)
+        for (int i = 0; i < 512; ++i)
+            (void) clock.getTransport().phaseAt (i, 0.25);
+
+    CHECK_THAT (clock.getTransport().ppq, WithinAbs (start, 1e-12));
+
+    clock.advance (24000);   // half a second at 120 BPM = 1 beat
+    clock.update (120.0, std::nullopt, std::nullopt, 4, 4, false);
+    CHECK_THAT (clock.getTransport().ppq, WithinAbs (start + 1.0, 1e-9));
+}
+
+TEST_CASE ("Bar length follows the host's time signature", "[unit][clock]")
 {
     silo::Clock clock;
     clock.prepare (48000.0);
 
-    clock.update (120.0, 0.0, true);
-    auto first = clock.tick();
-    CHECK (first.step == 0);
-    CHECK_THAT (first.phase, WithinAbs (0.0, 1e-9));
+    CHECK_THAT (playingAt (clock, 0.0, 4, 4).beatsPerBar, WithinAbs (4.0, 1e-12));
+    CHECK_THAT (playingAt (clock, 0.0, 3, 4).beatsPerBar, WithinAbs (3.0, 1e-12));
+    CHECK_THAT (playingAt (clock, 0.0, 6, 8).beatsPerBar, WithinAbs (3.0, 1e-12));
+    CHECK_THAT (playingAt (clock, 0.0, 7, 8).beatsPerBar, WithinAbs (3.5, 1e-12));
 
-    clock.update (120.0, 1.25, true);   // beat 1.25 = 16th #5
-    auto s = clock.tick();
-    CHECK (s.step == 5);
-    CHECK_THAT (s.phase, WithinAbs (0.0, 1e-9));
-
-    clock.update (120.0, 3.875, true);  // halfway through 16th #15
-    s = clock.tick();
-    CHECK (s.step == 15);
-    CHECK_THAT (s.phase, WithinAbs (0.5, 1e-9));
+    // In 3/4, beat 3.0 is the downbeat of bar 2: a 1-bar cycle restarts there.
+    const auto& t = playingAt (clock, 3.0, 3, 4);
+    CHECK_THAT (t.phase (t.ppq, *silo::beatsForNote ("1 bar", t.beatsPerBar)), WithinAbs (0.0, 1e-9));
+    CHECK (t.cycleIndex (t.ppq, 0.25) == 0);
 }
 
-TEST_CASE ("Clock wraps at the bar and follows loop jumps", "[unit][clock]")
+TEST_CASE ("Patterns align to the host's bar start after a meter change", "[unit][clock]")
+{
+    silo::Clock clock;
+    clock.prepare (48000.0);
+
+    // Song: one bar of 4/4, then 3/4. Host says bar 2 starts at beat 4.
+    const auto& t = playingAt (clock, 5.0, 3, 4, 4.0);
+    CHECK (t.cycleIndex (t.ppq, 0.25) == 4);   // 16th #4 of the 3/4 bar
+    CHECK_THAT (t.phase (t.ppq, 3.0), WithinAbs (1.0 / 3.0, 1e-9));
+}
+
+TEST_CASE ("Clock follows loop jumps and keeps running when stopped", "[unit][clock]")
 {
     silo::Clock clock;
     clock.prepare (44100.0);
 
-    clock.update (90.0, 4.0 + 0.5, true);  // bar 2, 16th #2
-    CHECK (clock.tick().step == 2);
+    CHECK (playingAt (clock, 4.5).cycleIndex (4.5, 0.25) == 2);
+    CHECK_THAT (playingAt (clock, 0.25).ppq, WithinAbs (0.25, 1e-12));   // host looped back
 
-    clock.update (90.0, 0.25, true);       // host looped back
-    CHECK (clock.tick().step == 1);
+    clock.advance (441);
+    const double before = clock.update (120.0, std::nullopt, std::nullopt, 4, 4, false).ppq;
+    clock.advance (441);
+    CHECK (clock.update (120.0, std::nullopt, std::nullopt, 4, 4, false).ppq > before);
 }
 
-TEST_CASE ("Clock advances one beat per beat-length of samples", "[unit][clock]")
+TEST_CASE ("Transport gives per-sample positions within a block", "[unit][clock]")
 {
     for (double bpm : { 60.0, 120.0, 174.0 })
     {
         silo::Clock clock;
         clock.prepare (48000.0);
-        clock.update (bpm, 0.0, true);
+        const auto& t = clock.update (bpm, 0.0, std::nullopt, 4, 4, true);
 
         const int samplesPerBeat = (int) std::round (48000.0 * 60.0 / bpm);
-        silo::StepInfo info;
-        for (int i = 0; i <= samplesPerBeat; ++i)
-            info = clock.tick();
-
-        CHECK_THAT (info.ppq, WithinAbs (1.0, 1e-3));
-        CHECK (info.step == 4);
+        CHECK_THAT (t.ppqAt (samplesPerBeat), WithinAbs (1.0, 1e-3));
     }
 }
 
-TEST_CASE ("Clock keeps running when the transport is stopped", "[unit][clock]")
+TEST_CASE ("Note values convert to beats", "[unit][clock]")
 {
-    silo::Clock clock;
-    clock.prepare (48000.0);
-    clock.update (120.0, std::nullopt, false);
-
-    double last = -1.0;
-    for (int i = 0; i < 1000; ++i)
-    {
-        auto info = clock.tick();
-        CHECK (info.ppq > last);
-        last = info.ppq;
-    }
-}
-
-TEST_CASE ("Clock supports triplet divisions", "[unit][clock]")
-{
-    silo::Clock clock;
-    clock.prepare (48000.0);
-    clock.setStepsPerBeat (6.0);           // 1/16 triplets: 24 steps per 4/4 bar
-    clock.update (120.0, 3.5, true);
-    CHECK (clock.tick().step == 21);
+    CHECK_THAT (*silo::beatsForNote ("1/4", 4),    WithinAbs (1.0,       1e-12));
+    CHECK_THAT (*silo::beatsForNote ("1/16", 4),   WithinAbs (0.25,      1e-12));
+    CHECK_THAT (*silo::beatsForNote ("1/128", 4),  WithinAbs (0.03125,   1e-12));
+    CHECK_THAT (*silo::beatsForNote ("1/8T", 4),   WithinAbs (1.0 / 3.0, 1e-12));
+    CHECK_THAT (*silo::beatsForNote ("1/8.", 4),   WithinAbs (0.75,      1e-12));
+    CHECK_THAT (*silo::beatsForNote ("1 bar", 3),  WithinAbs (3.0,       1e-12));
+    CHECK_THAT (*silo::beatsForNote ("2 bars", 4), WithinAbs (8.0,       1e-12));
+    CHECK_FALSE (silo::beatsForNote ("off", 4).has_value());
+    CHECK_FALSE (silo::beatsForNote ("1/0", 4).has_value());
 }

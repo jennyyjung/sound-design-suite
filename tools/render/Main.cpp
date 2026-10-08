@@ -2,11 +2,16 @@
 //
 //   soundsuite-render --in loop.wav --out out.wav [--gate_chop 0.5] [--width_pan 0.3]
 //                     [--space 0] [--width_manual 100] [--sweep width_pan] [--block 512]
+//                     [--tail <seconds>]
 //
 // Any parameter ID can be passed as --<id> <value> (macros 0..1, advanced
 // parameters in their own units). --sweep <id> automates that parameter 0 -> 1
 // across the file. Prints metrics as JSON on stdout, for tuning sessions and
 // golden-render comparisons.
+//
+// The output runs past the end of the input by --tail seconds of silence so
+// reverb and delay tails are rendered and measured. Without --tail it uses the
+// tail the plugin reports for the chosen settings.
 
 #include "PluginProcessor.h"
 #include "analysis/Metrics.h"
@@ -52,7 +57,7 @@ int main (int argc, char* argv[])
     const auto inFile  = cwd.getChildFile (option ("in"));
     const auto outPath = option ("out");
     if (option ("in").isEmpty() || outPath.isEmpty())
-        return fail ("usage: soundsuite-render --in file.wav --out out.wav [--<param-id> value ...] [--sweep <param-id>]");
+        return fail ("usage: soundsuite-render --in file.wav --out out.wav [--<param-id> value ...] [--sweep <param-id>] [--tail <seconds>]");
 
     juce::AudioFormatManager formats;
     formats.registerBasicFormats();
@@ -66,9 +71,6 @@ int main (int argc, char* argv[])
     const int    blockSize  = option ("block").isNotEmpty() ? option ("block").getIntValue() : 512;
     if (blockSize <= 0)
         return fail ("--block must be a positive whole number");
-
-    juce::AudioBuffer<float> audio (2, numSamples);
-    reader->read (&audio, 0, numSamples, 0, true, true);   // mono files are copied to both sides
 
     SoundSuiteProcessor proc;
     proc.setPlayConfigDetails (2, 2, sr, blockSize);
@@ -88,15 +90,29 @@ int main (int argc, char* argv[])
         if ((sweep = state.getParameter (option ("sweep"))) == nullptr)
             return fail ("unknown parameter for --sweep");
 
-    silo::metrics::Signal inL (audio.getReadPointer (0), audio.getReadPointer (0) + numSamples);
-    silo::metrics::Signal inR (audio.getReadPointer (1), audio.getReadPointer (1) + numSamples);
+    double tailSeconds = proc.getTailLengthSeconds();
+    if (option ("tail").isNotEmpty())
+    {
+        tailSeconds = option ("tail").getDoubleValue();
+        if (tailSeconds < 0.0)
+            return fail ("--tail must be zero or more seconds");
+    }
+
+    // Input followed by silence, so the plugin's tail is rendered too.
+    const int totalSamples = numSamples + (int) std::ceil (tailSeconds * sr);
+    juce::AudioBuffer<float> audio (2, totalSamples);
+    audio.clear();
+    reader->read (&audio, 0, numSamples, 0, true, true);   // mono files are copied to both sides
+
+    silo::metrics::Signal inL (audio.getReadPointer (0), audio.getReadPointer (0) + totalSamples);
+    silo::metrics::Signal inR (audio.getReadPointer (1), audio.getReadPointer (1) + totalSamples);
 
     juce::MidiBuffer midi;
-    for (int pos = 0; pos < numSamples; pos += blockSize)
+    for (int pos = 0; pos < totalSamples; pos += blockSize)
     {
-        const int n = juce::jmin (blockSize, numSamples - pos);
+        const int n = juce::jmin (blockSize, totalSamples - pos);
         if (sweep != nullptr)
-            sweep->setValueNotifyingHost ((float) pos / (float) numSamples);
+            sweep->setValueNotifyingHost (juce::jmin (1.0f, (float) pos / (float) numSamples));
 
         juce::AudioBuffer<float> view (audio.getArrayOfWritePointers(), 2, pos, n);
         proc.processBlock (view, midi);
@@ -111,12 +127,13 @@ int main (int argc, char* argv[])
                                                                               .withBitsPerSample (24));
     if (writer == nullptr)
         return fail ("can't write " + outFile.getFullPathName());
-    writer->writeFromAudioSampleBuffer (audio, 0, numSamples);
+    writer->writeFromAudioSampleBuffer (audio, 0, totalSamples);
 
-    silo::metrics::Signal outL (audio.getReadPointer (0), audio.getReadPointer (0) + numSamples);
-    silo::metrics::Signal outR (audio.getReadPointer (1), audio.getReadPointer (1) + numSamples);
+    silo::metrics::Signal outL (audio.getReadPointer (0), audio.getReadPointer (0) + totalSamples);
+    silo::metrics::Signal outR (audio.getReadPointer (1), audio.getReadPointer (1) + totalSamples);
 
     auto* report = new juce::DynamicObject();
+    report->setProperty ("tail_seconds", tailSeconds);
     report->setProperty ("input",  metricsFor (inL, inR, sr));
     report->setProperty ("output", metricsFor (outL, outR, sr));
     std::cout << juce::JSON::toString (juce::var (report)) << std::endl;

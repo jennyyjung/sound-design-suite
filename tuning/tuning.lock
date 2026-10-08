@@ -1,0 +1,6 @@
+# Tuning lock: <macro> <version> <fingerprint>
+# Checked by tests/unit/TuningLockTests.cpp. Change a tuning file -> bump its
+# "version" -> paste the line the failing test prints here.
+gate_chop 1 59ee1b10ccaa8797
+width_pan 1 7c4a4b752c1a996b
+space 1 ef9f7fbc50bdd152

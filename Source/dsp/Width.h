@@ -2,6 +2,8 @@
 
 #include <juce_dsp/juce_dsp.h>
 
+#include "Module.h"
+
 #include <cmath>
 
 namespace silo
@@ -17,7 +19,7 @@ namespace silo
 // At width 1 the module is a true bypass (dry signal, bit-exact). Moving away
 // from 1 crossfades into the processed path over ~20 ms, because the crossover
 // shifts phase and a hard switch would click.
-class Width
+class Width : public Module
 {
 public:
     void prepare (double sampleRate, int maxBlockSize)

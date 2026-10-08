@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "macros/ZoneTable.h"
+#include "Parameters.h"
 #include <BinaryData.h>
 
 using Catch::Matchers::WithinAbs;
@@ -10,6 +11,7 @@ namespace
 {
 const char* table = R"({
   "macro": "test",
+  "version": 1,
   "defaults": { "mix": 0.0, "rate": "1/4" },
   "anchors": [
     { "at": 0.0, "name": "Off",  "params": {} },
@@ -63,31 +65,66 @@ TEST_CASE ("ZoneTable rejects broken tables", "[unit][zones]")
 {
     juce::String error;
     CHECK_FALSE (silo::ZoneTable::fromJson ("{", &error).has_value());
-    CHECK_FALSE (silo::ZoneTable::fromJson (R"({"anchors": []})", &error).has_value());
-    CHECK_FALSE (silo::ZoneTable::fromJson (R"({"anchors": [{"at": 0.2}]})", &error).has_value());
+    CHECK_FALSE (silo::ZoneTable::fromJson (R"({"version": 1, "anchors": []})", &error).has_value());
+    CHECK_FALSE (silo::ZoneTable::fromJson (R"({"version": 1, "anchors": [{"at": 0.2}]})", &error).has_value());
     CHECK (error.contains ("zero is bypass"));
-    CHECK_FALSE (silo::ZoneTable::fromJson (R"({"anchors": [{"at": 0.0}, {"at": 0.5}, {"at": 0.4}]})", &error).has_value());
+    CHECK_FALSE (silo::ZoneTable::fromJson (R"({"version": 1, "anchors": [{"at": 0.0}, {"at": 0.5}, {"at": 0.4}]})", &error).has_value());
+    CHECK_FALSE (silo::ZoneTable::fromJson (R"({"anchors": [{"at": 0.0}]})", &error).has_value());
+    CHECK (error.contains ("version"));
 }
 
-TEST_CASE ("Shipped tuning files parse and start at bypass", "[unit][zones]")
+namespace
 {
-    const std::pair<const char*, int> files[] = {
-        { TuningData::gate_chop_json, TuningData::gate_chop_jsonSize },
-        { TuningData::width_pan_json, TuningData::width_pan_jsonSize },
-        { TuningData::space_json,     TuningData::space_jsonSize },
-    };
+juce::String tuningResource (const juce::String& fileName)
+{
+    for (int i = 0; i < TuningData::namedResourceListSize; ++i)
+        if (fileName == TuningData::originalFilenames[i])
+        {
+            int size = 0;
+            const char* data = TuningData::getNamedResource (TuningData::namedResourceList[i], size);
+            return juce::String::fromUTF8 (data, size);
+        }
+    return {};
+}
+}
 
-    for (auto [data, size] : files)
+TEST_CASE ("Every registered macro has a valid tuning file that starts at bypass", "[unit][zones]")
+{
+    for (const auto& m : silo::macros)
     {
+        const auto id = silo::toString (m.id);
+        INFO ("macro " << id);
+
+        const auto json = tuningResource (id + ".json");
+        REQUIRE (json.isNotEmpty());   // tuning/<id>.json is missing
+
         juce::String error;
-        auto t = silo::ZoneTable::fromJson (juce::String::fromUTF8 (data, size), &error);
+        auto t = silo::ZoneTable::fromJson (json, &error);
         INFO (error);
         REQUIRE (t.has_value());
+        CHECK (t->getMacro() == id);
         CHECK (juce::exactlyEqual (t->getAnchors().front().at, 0.0f));
     }
+}
 
-    // The width macro only widens; narrowing belongs to the advanced view.
-    auto width = silo::ZoneTable::fromJson (juce::String::fromUTF8 (TuningData::width_pan_json, TuningData::width_pan_jsonSize));
+TEST_CASE ("Every tuning file belongs to a registered macro", "[unit][zones]")
+{
+    for (int i = 0; i < TuningData::namedResourceListSize; ++i)
+    {
+        const juce::String file = TuningData::originalFilenames[i];
+        INFO ("tuning/" << file << " has no entry in silo::macros (MacroRegistry.h)");
+
+        bool registered = false;
+        for (const auto& m : silo::macros)
+            registered |= (silo::toString (m.id) + ".json" == file);
+        CHECK (registered);
+    }
+}
+
+TEST_CASE ("The width macro only widens; narrowing is the advanced view's job", "[unit][zones]")
+{
+    auto width = silo::ZoneTable::fromJson (tuningResource ("width_pan.json"));
+    REQUIRE (width.has_value());
     for (auto& a : width->getAnchors())
         CHECK ((double) a.params.getWithDefault ("width", 1.0) >= 1.0);
 }

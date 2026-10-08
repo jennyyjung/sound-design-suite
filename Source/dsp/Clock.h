@@ -2,72 +2,146 @@
 
 #include <cmath>
 #include <optional>
+#include <string_view>
 
 namespace silo
 {
 
-// Where we are in the bar, in steps. Produced per sample by Clock::tick().
-struct StepInfo
+// Stateless: position 0..1 within a cycle of `beatsPerCycle` beats.
+inline double phase (double beats, double beatsPerCycle)
 {
-    int    step  = 0;     // 0..stepsPerBar-1
-    double phase = 0.0;   // 0..1 progress through the current step
-    double ppq   = 0.0;   // beats since song start
+    if (beatsPerCycle <= 0.0)
+        return 0.0;
+    const double x = beats / beatsPerCycle;
+    return x - std::floor (x);
+}
+
+// One block's view of musical time, shared read-only by every module.
+//
+// Nothing here advances time: the processor owns the single Clock and moves it
+// forward once per block. Each module asks for its own rate with phase(), so a
+// 1/16 gate, a 1-bar auto-pan and a 1/128 pre-delay all read the same timeline.
+struct Transport
+{
+    double ppq            = 0.0;     // quarter-note beats since song start, at the block's first sample
+    double beatsPerSample = 0.0;
+    double bpm            = 120.0;
+    double beatsPerBar    = 4.0;     // in quarter notes: 4/4 = 4, 3/4 = 3, 6/8 = 3, 7/8 = 3.5
+    double barStartPpq    = 0.0;     // where the current bar began
+    bool   playing        = false;
+
+    double ppqAt (int sampleInBlock) const { return ppq + beatsPerSample * sampleInBlock; }
+
+    // 0..1 position within a cycle `beatsPerCycle` long, aligned to the bar so
+    // patterns restart on the downbeat in any meter.
+    double phase (double atPpq, double beatsPerCycle) const
+    {
+        return silo::phase (atPpq - barStartPpq, beatsPerCycle);
+    }
+
+    double phaseAt (int sampleInBlock, double beatsPerCycle) const
+    {
+        return phase (ppqAt (sampleInBlock), beatsPerCycle);
+    }
+
+    // Which cycle (step) we're in since the bar start, e.g. the 16th-note index.
+    long long cycleIndex (double atPpq, double beatsPerCycle) const
+    {
+        return (long long) std::floor ((atPpq - barStartPpq) / beatsPerCycle);
+    }
 };
 
-// Turns host tempo + transport into a per-sample step position. When the host
-// is stopped it keeps running from its own position so the plugin still previews.
+// Note value -> length in quarter-note beats. Accepts "1/16", "1/8T" (triplet),
+// "1/4." (dotted), "1 bar", "2 bars". Returns nullopt for anything else.
+inline std::optional<double> beatsForNote (std::string_view note, double beatsPerBar)
+{
+    auto trim = [] (std::string_view s)
+    {
+        while (! s.empty() && s.front() == ' ') s.remove_prefix (1);
+        while (! s.empty() && s.back()  == ' ') s.remove_suffix (1);
+        return s;
+    };
+    note = trim (note);
+
+    auto parseNumber = [] (std::string_view s, double& out)
+    {
+        if (s.empty()) return false;
+        double v = 0.0;
+        for (char c : s)
+        {
+            if (c < '0' || c > '9') return false;
+            v = v * 10.0 + (c - '0');
+        }
+        out = v;
+        return true;
+    };
+
+    if (auto pos = note.find ("bar"); pos != std::string_view::npos)
+    {
+        double count = 1.0;
+        auto num = trim (note.substr (0, pos));
+        if (! num.empty() && ! parseNumber (num, count)) return std::nullopt;
+        return count * beatsPerBar;
+    }
+
+    double factor = 1.0;
+    if (! note.empty() && (note.back() == 'T' || note.back() == 't')) { factor = 2.0 / 3.0; note.remove_suffix (1); }
+    else if (! note.empty() && note.back() == '.')                   { factor = 1.5;       note.remove_suffix (1); }
+
+    const auto slash = note.find ('/');
+    if (slash == std::string_view::npos) return std::nullopt;
+
+    double num = 0, den = 0;
+    if (! parseNumber (note.substr (0, slash), num) || ! parseNumber (note.substr (slash + 1), den) || den <= 0.0)
+        return std::nullopt;
+
+    return 4.0 * num / den * factor;   // a whole note is 4 quarter-note beats
+}
+
+// The plugin's single time source. The processor calls update() at the start of
+// each block and advance() at the end; modules only ever see the Transport.
+// When the host is stopped it keeps running from its own position so the plugin
+// still previews.
 class Clock
 {
 public:
-    void prepare (double newSampleRate)
-    {
-        sampleRate = newSampleRate;
-        updateIncrement();
-    }
+    void prepare (double newSampleRate) { sampleRate = newSampleRate; }
 
-    // Once per block. Pass std::nullopt for ppq when the host is stopped or
-    // gives no position.
-    void update (double newBpm, std::optional<double> hostPpq, bool isPlaying)
+    // Host values for this block. Missing ones (stopped transport, hosts that
+    // don't report them) fall back to the free-running clock and 4/4.
+    const Transport& update (double bpm,
+                             std::optional<double> hostPpq,
+                             std::optional<double> hostBarStartPpq,
+                             int timeSigNumerator,
+                             int timeSigDenominator,
+                             bool isPlaying)
     {
-        bpm = newBpm > 0.0 ? newBpm : 120.0;
-        updateIncrement();
+        transport.bpm            = bpm > 0.0 ? bpm : 120.0;
+        transport.beatsPerSample = transport.bpm / 60.0 / sampleRate;
+        transport.beatsPerBar    = (timeSigNumerator > 0 && timeSigDenominator > 0)
+                                     ? timeSigNumerator * 4.0 / timeSigDenominator
+                                     : 4.0;
+        transport.playing        = isPlaying;
 
         if (isPlaying && hostPpq.has_value())
-            ppq = *hostPpq;   // follow the host exactly, including loop jumps
+            freePpq = *hostPpq;   // follow the host exactly, including loop jumps
+
+        transport.ppq = freePpq;
+        transport.barStartPpq = (isPlaying && hostBarStartPpq.has_value())
+                                  ? *hostBarStartPpq
+                                  : std::floor (freePpq / transport.beatsPerBar) * transport.beatsPerBar;
+        return transport;
     }
 
-    void setStepsPerBeat (double s) { stepsPerBeat = s; }   // 4 = 1/16, 2 = 1/8, 6 = 1/16T
-    void setBeatsPerBar (int b)     { beatsPerBar = b; }
+    // The only place time moves forward.
+    void advance (int numSamples) { freePpq += transport.beatsPerSample * numSamples; }
 
-    StepInfo tick()
-    {
-        StepInfo info;
-        info.ppq = ppq;
-
-        const double stepPos     = ppq * stepsPerBeat;
-        const double stepsPerBar = stepsPerBeat * beatsPerBar;
-        const double inBar       = std::fmod (stepPos, stepsPerBar);
-        const double wrapped     = inBar < 0.0 ? inBar + stepsPerBar : inBar;
-
-        info.step  = (int) std::floor (wrapped);
-        info.phase = wrapped - std::floor (wrapped);
-
-        ppq += beatsPerSample;
-        return info;
-    }
-
-    double getBpm() const            { return bpm; }
-    double getBeatsPerSample() const { return beatsPerSample; }
+    const Transport& getTransport() const { return transport; }
 
 private:
-    void updateIncrement() { beatsPerSample = bpm / 60.0 / sampleRate; }
-
-    double sampleRate     = 44100.0;
-    double bpm            = 120.0;
-    double ppq            = 0.0;
-    double beatsPerSample = 120.0 / 60.0 / 44100.0;
-    double stepsPerBeat   = 4.0;
-    int    beatsPerBar    = 4;
+    double    sampleRate = 44100.0;
+    double    freePpq    = 0.0;
+    Transport transport;
 };
 
 } // namespace silo

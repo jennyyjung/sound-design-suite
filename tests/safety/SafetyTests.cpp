@@ -19,7 +19,23 @@ namespace
 {
 struct Stereo { Signal l, r; };
 
-const juce::ParameterID* const allMacros[] = { &silo::ids::gateChop, &silo::ids::widthPan, &silo::ids::space };
+// Every registered macro, straight from the registry.
+const std::vector<juce::ParameterID> macroIds = []
+{
+    std::vector<juce::ParameterID> ids;
+    for (std::size_t i = 0; i < silo::numMacros; ++i)
+        ids.push_back (silo::macroParameterID (i));
+    return ids;
+}();
+
+const std::vector<const juce::ParameterID*> allMacros = []
+{
+    std::vector<const juce::ParameterID*> ptrs;
+    for (auto& id : macroIds) ptrs.push_back (&id);
+    return ptrs;
+}();
+
+const juce::ParameterID& widthPanId = macroIds[silo::macroIndex ("width_pan")];
 
 // 3 s of stereo material: mono bass, a stereo pair of tones, and independent
 // noise per side, so width, gain and mono checks all have something to measure.
@@ -213,7 +229,7 @@ TEST_CASE ("Advanced-view narrowing works and stays level", "[safety]")
 TEST_CASE ("State survives save and reload", "[safety]")
 {
     SoundSuiteProcessor a;
-    setMacro (a, silo::ids::widthPan, 0.42f);
+    setMacro (a, widthPanId, 0.42f);
     a.getState().getParameter (silo::ids::widthManual.getParamID())->setValueNotifyingHost (0.3f);
 
     juce::MemoryBlock state;
@@ -222,6 +238,91 @@ TEST_CASE ("State survives save and reload", "[safety]")
     SoundSuiteProcessor b;
     b.setStateInformation (state.getData(), (int) state.getSize());
 
-    CHECK (std::abs (b.getState().getParameter (silo::ids::widthPan.getParamID())->getValue() - 0.42f) < 1e-4f);
+    CHECK (std::abs (b.getState().getParameter (widthPanId.getParamID())->getValue() - 0.42f) < 1e-4f);
     CHECK (std::abs (b.getState().getParameter (silo::ids::widthManual.getParamID())->getValue() - 0.3f) < 1e-4f);
+}
+
+TEST_CASE ("Saved state records each macro's tuning version and dice seed", "[safety][state]")
+{
+    SoundSuiteProcessor a;
+    a.setDiceSeed (silo::macroIndex ("space"), 123456789);
+
+    juce::MemoryBlock blob;
+    a.getStateInformation (blob);
+    auto xml = juce::AudioProcessor::getXmlFromBinary (blob.getData(), (int) blob.getSize());
+    REQUIRE (xml != nullptr);
+    CHECK (xml->getIntAttribute ("state_version") == SoundSuiteProcessor::stateVersion);
+
+    auto* tuning = xml->getChildByName ("Tuning");
+    REQUIRE (tuning != nullptr);
+    for (std::size_t i = 0; i < silo::numMacros; ++i)
+    {
+        auto* m = tuning->getChildByAttribute ("id", silo::toString (silo::macros[i].id));
+        REQUIRE (m != nullptr);
+        CHECK (m->getIntAttribute ("version") == a.getZones (i).get().getVersion());
+        CHECK (m->hasAttribute ("dice_seed"));
+    }
+
+    SoundSuiteProcessor b;
+    b.setStateInformation (blob.getData(), (int) blob.getSize());
+    CHECK (b.getDiceSeed (silo::macroIndex ("space")) == 123456789);
+    CHECK (b.getLastLoadMismatches().empty());
+}
+
+TEST_CASE ("Loading a session saved with a different tuning version is reported", "[safety][state]")
+{
+    SoundSuiteProcessor a;
+    setMacro (a, widthPanId, 0.42f);
+
+    juce::MemoryBlock blob;
+    a.getStateInformation (blob);
+    auto xml = juce::AudioProcessor::getXmlFromBinary (blob.getData(), (int) blob.getSize());
+    const int current = a.getZones (silo::macroIndex ("width_pan")).get().getVersion();
+    xml->getChildByName ("Tuning")->getChildByAttribute ("id", "width_pan")->setAttribute ("version", current + 5);
+
+    juce::MemoryBlock edited;
+    juce::AudioProcessor::copyXmlToBinary (*xml, edited);
+
+    SoundSuiteProcessor b;
+    b.setStateInformation (edited.getData(), (int) edited.getSize());
+
+    REQUIRE (b.getLastLoadMismatches().size() == 1);
+    CHECK (b.getLastLoadMismatches()[0].macro == "width_pan");
+    CHECK (b.getLastLoadMismatches()[0].savedVersion == current + 5);
+    CHECK (b.getLastLoadMismatches()[0].currentVersion == current);
+    // No migration case yet, so the knob position is kept.
+    CHECK (std::abs (b.getState().getParameter ("width_pan")->getValue() - 0.42f) < 1e-4f);
+}
+
+TEST_CASE ("Sessions from before tuning versions load as version 1", "[safety][state]")
+{
+    // What PR #1 builds saved: parameters only, no <Tuning>.
+    juce::XmlElement old ("SoundSuite");
+    old.setAttribute ("version", 1);
+    auto* p = old.createNewChildElement ("PARAM");
+    p->setAttribute ("id", "width_pan");
+    p->setAttribute ("value", 0.3);
+
+    juce::MemoryBlock blob;
+    juce::AudioProcessor::copyXmlToBinary (old, blob);
+
+    SoundSuiteProcessor proc;
+    proc.setStateInformation (blob.getData(), (int) blob.getSize());
+
+    for (const auto& mismatch : proc.getLastLoadMismatches())
+        CHECK (mismatch.savedVersion == 1);
+    CHECK (std::abs (proc.getState().getParameter ("width_pan")->getValue() - 0.3f) < 1e-4f);
+    CHECK (proc.getDiceSeed (0) == 0);
+}
+
+TEST_CASE ("Tail and latency come from the modules", "[safety]")
+{
+    SoundSuiteProcessor proc;
+    proc.setPlayConfigDetails (2, 2, 48000.0, 512);
+    proc.prepareToPlay (48000.0, 512);
+
+    // Width has no memory beyond its smoothing, so the chain reports none yet.
+    // Space (build step 4) adds its decay here.
+    CHECK (proc.getTailLengthSeconds() >= 0.0);
+    CHECK (proc.getLatencySamples() == proc.getChainLatencySamples());
 }
