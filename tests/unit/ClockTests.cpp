@@ -114,3 +114,48 @@ TEST_CASE ("Note values convert to beats", "[unit][clock]")
     CHECK_FALSE (silo::beatsForNote ("off", 4).has_value());
     CHECK_FALSE (silo::beatsForNote ("1/0", 4).has_value());
 }
+
+TEST_CASE ("Cycles longer than a bar run across bar lines", "[unit][clock]")
+{
+    silo::Clock clock;
+    clock.prepare (48000.0);
+    const double twoBars = *silo::beatsForNote ("2 bars", 4);
+
+    // Beat 6 of 4/4 is halfway into bar 2: three quarters through a 2-bar cycle.
+    const auto& t = playingAt (clock, 6.0, 4, 4, 4.0);
+    CHECK_THAT (t.phase (t.ppq, twoBars), WithinAbs (0.75, 1e-9));
+    CHECK (t.cycleIndex (t.ppq, twoBars) == 0);
+
+    // The cycle completes at beat 8, not at every downbeat.
+    const auto& u = playingAt (clock, 9.0, 4, 4, 8.0);
+    CHECK_THAT (u.phase (u.ppq, twoBars), WithinAbs (0.125, 1e-9));
+    CHECK (u.cycleIndex (u.ppq, twoBars) == 1);
+}
+
+TEST_CASE ("Cycles that don't fit the bar evenly don't jump at the downbeat", "[unit][clock]")
+{
+    silo::Clock clock;
+    clock.prepare (48000.0);
+    const double dottedQuarter = *silo::beatsForNote ("1/4.", 4);   // 1.5 beats
+
+    // Phase moves smoothly from just before the bar line to just after it.
+    const auto& before = playingAt (clock, 3.999, 4, 4, 0.0);
+    const double a = before.phase (before.ppq, dottedQuarter);
+    const auto& after = playingAt (clock, 4.001, 4, 4, 4.0);
+    const double b = after.phase (after.ppq, dottedQuarter);
+
+    CHECK_THAT (a, WithinAbs (2.499 / 1.5 - 1.0, 1e-9));
+    CHECK_THAT (b, WithinAbs (a + 0.002 / 1.5, 1e-9));
+}
+
+TEST_CASE ("Cycles that fit the bar still restart on the host's downbeat", "[unit][clock]")
+{
+    silo::Clock clock;
+    clock.prepare (48000.0);
+
+    // 7/8 bar (3.5 beats) starting at beat 4 after a 4/4 bar: an 1/8 grid
+    // restarts at 4, though 4 isn't a multiple of 1/8-in-7/8 from song start.
+    const auto& t = playingAt (clock, 4.0, 7, 8, 4.0);
+    CHECK (t.cycleIndex (t.ppq, *silo::beatsForNote ("1/8", t.beatsPerBar)) == 0);
+    CHECK_THAT (t.phase (t.ppq, *silo::beatsForNote ("1 bar", t.beatsPerBar)), WithinAbs (0.0, 1e-9));
+}

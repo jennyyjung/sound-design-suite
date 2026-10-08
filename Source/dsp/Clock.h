@@ -32,11 +32,24 @@ struct Transport
 
     double ppqAt (int sampleInBlock) const { return ppq + beatsPerSample * sampleInBlock; }
 
-    // 0..1 position within a cycle `beatsPerCycle` long, aligned to the bar so
-    // patterns restart on the downbeat in any meter.
+    // Where cycles of `beatsPerCycle` are counted from. A cycle that fits a whole
+    // number of times into the bar (1/16, 1/8T, 1 bar in any meter) restarts on
+    // every downbeat, so it stays aligned through meter changes. Anything else
+    // (2 bars, 1/4. in 4/4) runs from the song start, so it can span bar lines
+    // without jumping back at each one.
+    double cycleOrigin (double beatsPerCycle) const
+    {
+        if (beatsPerCycle <= 0.0)
+            return 0.0;
+        const double perBar = beatsPerBar / beatsPerCycle;
+        const double whole  = std::round (perBar);
+        return (whole >= 1.0 && std::abs (perBar - whole) < 1e-9) ? barStartPpq : 0.0;
+    }
+
+    // 0..1 position within a cycle `beatsPerCycle` long (see cycleOrigin()).
     double phase (double atPpq, double beatsPerCycle) const
     {
-        return silo::phase (atPpq - barStartPpq, beatsPerCycle);
+        return silo::phase (atPpq - cycleOrigin (beatsPerCycle), beatsPerCycle);
     }
 
     double phaseAt (int sampleInBlock, double beatsPerCycle) const
@@ -44,10 +57,11 @@ struct Transport
         return phase (ppqAt (sampleInBlock), beatsPerCycle);
     }
 
-    // Which cycle (step) we're in since the bar start, e.g. the 16th-note index.
+    // Which cycle (step) we're in, counted from cycleOrigin(): for a 1/16 that's
+    // the 16th-note index within the bar.
     long long cycleIndex (double atPpq, double beatsPerCycle) const
     {
-        return (long long) std::floor ((atPpq - barStartPpq) / beatsPerCycle);
+        return (long long) std::floor ((atPpq - cycleOrigin (beatsPerCycle)) / beatsPerCycle);
     }
 };
 

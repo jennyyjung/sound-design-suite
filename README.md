@@ -64,7 +64,7 @@ Each `tuning/<macro>.json` is a list of anchors (`at` 0..1, a `name`, and parame
 
 In a **Debug** build the plugin re-reads these files about 15 times a second while its window is open, so you can edit a value, save, and hear it. Release builds compile the files in. After editing, run `ctest`: the safety tests re-check every macro position.
 
-**Versions.** Sessions save which tuning version each knob was set against. Once a table has shipped, any change to it must bump its `"version"`, or old sessions would silently play differently. `tuning/tuning.lock` enforces this: change a table without bumping and `ctest` fails, printing the lock line to paste after you bump. Editing only `"status"` or `"notes"` doesn't count. If the change moves zones around, add a case to `Source/macros/TuningMigrations.h` so old sessions land in the zone they were set to.
+**Versions.** Sessions save which tuning version each knob was set against. Once a table has shipped, any change to it must bump its `"version"`, or old sessions would silently play differently. Mark a table shipped by starting its `"status"` with `shipped`; from then on `tuning/tuning.lock` enforces the rule: change the table without bumping and `ctest` fails, printing the lock line to paste after you bump. Tables that aren't shipped yet can be retuned freely. Editing only `"status"` or `"notes"` doesn't count. If the change moves zones around, add a case to `Source/macros/TuningMigrations.h` so old sessions land in the zone they were set to.
 
 The Width macro only ever widens. Narrowing is the advanced view's **Stereo width** parameter, which multiplies with the macro.
 
@@ -78,7 +78,7 @@ Parameters, the knob in the editor, hot-reload, saved-state versioning and the s
 
 ## Timing
 
-`processBlock` turns the host transport into one `silo::Transport` per block and advances the clock once at the end; nothing else moves time. Each module picks its own rate: `transport.phaseAt (i, *silo::beatsForNote ("1/16", transport.beatsPerBar))`. Cycles are aligned to the host's bar start and bar length follows its time signature (6/8 = 3 quarter-note beats).
+`processBlock` turns the host transport into one `silo::Transport` per block and advances the clock once at the end; nothing else moves time. Each module picks its own rate: `transport.phaseAt (i, *silo::beatsForNote ("1/16", transport.beatsPerBar))`. Cycles that fit evenly into a bar (1/16, 1/8T, 1 bar) restart on the host's downbeat; longer or uneven ones (2 bars, 1/4. in 4/4) run from the song start so they cross bar lines without jumping. Bar length follows the host's time signature (6/8 = 3 quarter-note beats).
 
 ## Render tool
 

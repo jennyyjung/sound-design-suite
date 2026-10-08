@@ -6,6 +6,9 @@
 // would otherwise play differently with nothing to tell them apart. Editing
 // only "status" or "notes" doesn't count as a change.
 //
+// Only shipped tables are locked: a table whose "status" starts with "shipped".
+// Until then it can be retuned by ear freely, without bumping anything.
+//
 // After an intentional change: bump "version" in the JSON, then paste the line
 // this test prints into tuning/tuning.lock.
 
@@ -52,6 +55,13 @@ std::string canonical (std::string json)
     return compact;
 }
 
+// A table is shipped (and locked) once its "status" starts with "shipped".
+bool isShipped (const std::string& json)
+{
+    const auto root = juce::JSON::parse (juce::String::fromUTF8 (json.data(), (int) json.size()));
+    return root.getProperty ("status", {}).toString().trim().startsWithIgnoreCase ("shipped");
+}
+
 std::string fingerprint (const std::string& text)
 {
     std::uint64_t h = 1469598103934665603ull;   // FNV-1a 64
@@ -79,6 +89,9 @@ TEST_CASE ("Tuning changes come with a version bump", "[unit][zones][lock]")
         auto table = silo::ZoneTable::fromJson (juce::String::fromUTF8 (json.data(), (int) json.size()));
         REQUIRE (table.has_value());
 
+        if (! isShipped (json))
+            continue;
+
         const auto version  = table->getVersion();
         const auto expected = id + " " + std::to_string (version) + " " + fingerprint (canonical (json));
 
@@ -103,6 +116,15 @@ TEST_CASE ("Tuning changes come with a version bump", "[unit][zones][lock]")
         else
             CHECK (locked.toStdString() == expected);                              // version bumped, lock not updated
     }
+}
+
+TEST_CASE ("Only shipped tables are locked", "[unit][zones][lock]")
+{
+    CHECK (isShipped (R"({"status": "shipped 2026-11"})"));
+    CHECK (isShipped (R"({"status": "Shipped"})"));
+    CHECK_FALSE (isShipped (R"({"status": "placeholder: first guesses"})"));
+    CHECK_FALSE (isShipped (R"({"status": "not shipped yet"})"));
+    CHECK_FALSE (isShipped (R"({"anchors": []})"));
 }
 
 TEST_CASE ("Lock fingerprint ignores formatting and comments, not values", "[unit][zones][lock]")
