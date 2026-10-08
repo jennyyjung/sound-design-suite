@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (VST3 + AU)
+            os: macos-14
+            pluginval: pluginval_macOS.zip
+            pluginval_bin: pluginval.app/Contents/MacOS/pluginval
+          - name: Windows (VST3)
+            os: windows-latest
+            pluginval: pluginval_Windows.zip
+            pluginval_bin: pluginval.exe
+          - name: Linux (VST3)
+            os: ubuntu-24.04
+            pluginval: pluginval_Linux.zip
+            pluginval_bin: pluginval
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libasound2-dev libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
+            libxrandr-dev libxrender-dev libgl1-mesa-dev
+
+      - name: macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Unit and safety tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: pluginval (VST3)
+        shell: bash
+        run: |
+          curl -sSL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/latest/download/${{ matrix.pluginval }}"
+          unzip -q pluginval.zip
+          ./${{ matrix.pluginval_bin }} --strictness-level 10 --skip-gui-tests \
+            --validate "build/SoundSuite_artefacts/Release/VST3/Sound Suite.vst3"
+
+      - name: auval (AU)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "build/SoundSuite_artefacts/Release/AU/Sound Suite.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar || true
+          auval -v aufx Ssu1 Silo
+
+      - name: Upload plugins
+        uses: actions/upload-artifact@v4
+        with:
+          name: sound-suite-${{ runner.os }}
+          path: |
+            build/SoundSuite_artefacts/Release/VST3
+            build/SoundSuite_artefacts/Release/AU
+          if-no-files-found: ignore
