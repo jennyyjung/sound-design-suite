@@ -1,0 +1,15 @@
+{
+  "macro": "width_pan",
+  "version": 1,
+  "status": "placeholder: first guesses from design/build-test-plan-and-v1-effects.md, not yet tuned by ear",
+  "notes": "The macro only widens (zero is bypass). Narrowing below 100% is the advanced view's 'Stereo width' parameter, which multiplies with 'width' here.",
+  "defaults": { "width": 1.0, "pan_rate": "1 bar", "pan_depth": 0.0, "pan_shape": "sine", "pingpong_div": "1/16", "pingpong_mix": 0.0 },
+  "anchors": [
+    { "at": 0.00, "name": "Off",    "params": { "width": 1.0 } },
+    { "at": 0.25, "name": "Wide",   "params": { "width": 1.4 } },
+    { "at": 0.50, "name": "Drift",  "params": { "width": 1.3, "pan_rate": "1 bar", "pan_depth": 0.4,  "pan_shape": "sine" } },
+    { "at": 0.75, "name": "Move",   "params": { "width": 1.2, "pan_rate": "1/4",   "pan_depth": 0.7,  "pan_shape": "triangle" } },
+    { "at": 1.00, "name": "Bounce", "params": { "width": 1.1, "pan_rate": "1/8",   "pan_depth": 0.85, "pan_shape": "triangle", "pingpong_div": "1/16", "pingpong_mix": 0.25 } }
+  ],
+  "dice": { "width": [-0.15, 0.15], "pan_shape": ["sine", "triangle", "square"], "start_side": ["left", "right"], "pingpong_div": ["1/32", "1/16"] }
+}

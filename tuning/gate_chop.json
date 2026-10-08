@@ -1,0 +1,14 @@
+{
+  "macro": "gate_chop",
+  "version": 1,
+  "status": "placeholder: first guesses from design/build-test-plan-and-v1-effects.md, not yet tuned by ear",
+  "defaults": { "depth": 0.0, "length": 1.0, "attack_ms": 10.0, "release_ms": 60.0, "rate": "1/4", "shape": "sine", "pattern": "all", "repeat_prob": 0.0, "repeat_div": "1/32" },
+  "anchors": [
+    { "at": 0.00, "name": "Off",         "params": { "depth": 0.0 } },
+    { "at": 0.20, "name": "Pulse",       "params": { "rate": "1/4",  "depth": 0.35, "length": 1.0, "shape": "sine" } },
+    { "at": 0.45, "name": "Gate",        "params": { "rate": "1/8",  "depth": 0.75, "length": 0.6, "attack_ms": 8.0, "release_ms": 60.0, "shape": "trapezoid" } },
+    { "at": 0.70, "name": "Trance gate", "params": { "rate": "1/16", "depth": 1.0,  "length": 0.5, "attack_ms": 2.0, "release_ms": 25.0, "shape": "square", "pattern": "euclid 11/16" } },
+    { "at": 1.00, "name": "Chop",        "params": { "rate": "1/16", "depth": 1.0,  "length": 0.4, "attack_ms": 1.0, "release_ms": 10.0, "shape": "square", "pattern": "euclid 9/16", "repeat_prob": 0.4, "repeat_div": "1/32" } }
+  ],
+  "dice": { "euclid_hits": [5, 11], "euclid_rotate": [0, 15], "swing": [0.0, 0.15], "length": [-0.15, 0.15], "repeat_prob": [-0.15, 0.15] }
+}
