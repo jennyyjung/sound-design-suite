@@ -42,7 +42,10 @@ public:
             return fail ("invalid JSON: " + result.getErrorMessage());
 
         ZoneTable table;
-        table.macro = root.getProperty ("macro", {}).toString();
+        table.macro   = root.getProperty ("macro", {}).toString();
+        table.version = (int) root.getProperty ("version", 0);
+        if (table.version < 1)
+            return fail ("missing or invalid \"version\" (must be a whole number >= 1)");
 
         if (auto* defaults = root.getProperty ("defaults", {}).getDynamicObject())
             table.defaults = defaults->getProperties();
@@ -103,6 +106,7 @@ public:
     }
 
     const juce::String& getMacro() const          { return macro; }
+    int getVersion() const                        { return version; }
     const std::vector<Anchor>& getAnchors() const { return anchors; }
 
 private:
@@ -134,6 +138,7 @@ private:
     }
 
     juce::String         macro;
+    int                  version = 0;
     juce::NamedValueSet  defaults;
     std::vector<Anchor>  anchors;
 };

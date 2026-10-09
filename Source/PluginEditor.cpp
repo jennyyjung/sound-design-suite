@@ -5,27 +5,20 @@ SoundSuiteEditor::SoundSuiteEditor (SoundSuiteProcessor& p)
 {
     auto& state = processor.getState();
 
-    const std::array<std::tuple<const juce::ParameterID*, const char*, const silo::ZoneTableHolder*>, 3> macroDefs {{
-        { &silo::ids::gateChop, "Gate / Chop",      &processor.gateChopZones },
-        { &silo::ids::widthPan, "Width / Auto-pan", &processor.widthPanZones },
-        { &silo::ids::space,    "Space",            &processor.spaceZones },
-    }};
-
-    for (size_t i = 0; i < macros.size(); ++i)
+    for (std::size_t i = 0; i < silo::numMacros; ++i)
     {
-        auto& m = macros[i];
-        auto [id, name, zones] = macroDefs[i];
+        auto m = std::make_unique<MacroKnob>();
+        m->macro = i;
+        m->title.setText (silo::toString (silo::macros[i].name), juce::dontSendNotification);
+        m->title.setJustificationType (juce::Justification::centred);
+        m->zone.setJustificationType (juce::Justification::centred);
+        m->zone.setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+        m->attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (state, silo::toString (silo::macros[i].id), m->slider);
 
-        m.zones = zones;
-        m.title.setText (name, juce::dontSendNotification);
-        m.title.setJustificationType (juce::Justification::centred);
-        m.zone.setJustificationType (juce::Justification::centred);
-        m.zone.setColour (juce::Label::textColourId, juce::Colours::lightgrey);
-        m.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (state, id->getParamID(), m.slider);
-
-        addAndMakeVisible (m.slider);
-        addAndMakeVisible (m.title);
-        addAndMakeVisible (m.zone);
+        addAndMakeVisible (m->slider);
+        addAndMakeVisible (m->title);
+        addAndMakeVisible (m->zone);
+        macros.push_back (std::move (m));
     }
 
     // Advanced view: every parameter in the Advanced group, in declaration order.
@@ -73,7 +66,7 @@ void SoundSuiteEditor::timerCallback()
     processor.reloadTuningIfChanged();
 
     for (auto& m : macros)
-        m.zone.setText (m.zones->get().getZoneName ((float) m.slider.getValue()), juce::dontSendNotification);
+        m->zone.setText (processor.getZones (m->macro).get().getZoneName ((float) m->slider.getValue()), juce::dontSendNotification);
 }
 
 void SoundSuiteEditor::paint (juce::Graphics& g)
@@ -91,9 +84,9 @@ void SoundSuiteEditor::resized()
     for (auto& m : macros)
     {
         auto column = top.removeFromLeft (knobWidth).reduced (8, 0);
-        m.title.setBounds (column.removeFromTop (24));
-        m.zone.setBounds (column.removeFromBottom (24));
-        m.slider.setBounds (column);
+        m->title.setBounds (column.removeFromTop (24));
+        m->zone.setBounds (column.removeFromBottom (24));
+        m->slider.setBounds (column);
     }
 
     showParameters.setBounds (area.removeFromTop (28).removeFromLeft (160));

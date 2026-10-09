@@ -9,6 +9,7 @@ add_executable (SoundSuiteTests
     unit/ClockTests.cpp
     unit/ZoneTableTests.cpp
     unit/WidthTests.cpp
+    unit/TuningLockTests.cpp
     safety/SafetyTests.cpp
     safety/AllocationGuard.cpp
     JuceSetup.cpp)

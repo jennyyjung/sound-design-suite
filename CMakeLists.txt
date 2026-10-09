@@ -30,13 +30,12 @@ add_library (soundsuite_core INTERFACE)
 target_include_directories (soundsuite_core INTERFACE Source)
 
 # Tuning tables are compiled in as binary data; debug builds can also hot-reload
-# them from the tuning/ folder (see ZoneTable.h).
+# them from the tuning/ folder (see ZoneTable.h). Every tuning/*.json is picked
+# up, so a new macro needs no edit here.
+file (GLOB SOUNDSUITE_TUNING_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tuning/*.json")
 juce_add_binary_data (soundsuite_tuning
     NAMESPACE TuningData
-    SOURCES
-        tuning/gate_chop.json
-        tuning/width_pan.json
-        tuning/space.json)
+    SOURCES ${SOUNDSUITE_TUNING_FILES})
 
 # ---------------------------------------------------------------------------
 # The plugin
